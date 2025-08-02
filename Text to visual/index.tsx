@@ -84,11 +84,27 @@ export class GdmLiveAudio extends LitElement {
       background-color: var(--nlm-surface-page);
     }
 
-    .preview-area img {
+    .visual-description {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 2rem;
+      color: var(--nlm-text-primary);
+      font-size: 1.25rem;
+      line-height: 1.6;
+      background-color: var(--nlm-surface-panel);
+      border: 1px dashed var(--nlm-stroke);
+      border-radius: 0.5rem;
       width: 100%;
       height: 100%;
-      object-fit: contain;
-      border-radius: 0.5rem;
+      box-sizing: border-box;
+      overflow-y: auto;
+    }
+
+    .visual-description p {
+      margin: 0;
     }
 
     .status-overlay {
@@ -303,46 +319,22 @@ export class GdmLiveAudio extends LitElement {
     this.isLoading = true;
 
     try {
-      // 1. Generate Script
-      this.loadingStatus = 'Generating script...';
+      // 1. Generate Script and Storyboard
+      this.loadingStatus = 'Generating script and storyboard...';
       const script = await this.generateScript();
+
+      if (!script || script.length === 0) {
+        throw new Error('The generated script was empty.');
+      }
       this.story = script;
 
-      // 2. Generate Frames in parallel
-      const allVisuals = this.story.flatMap((part) => part.visuals);
-      const totalFrames = allVisuals.length;
-      if (totalFrames === 0) {
-        this.frames = [];
+      // 2. Extract visual descriptions as "frames"
+      const textFrames = this.story.map((part) => part.visuals);
+      this.frames = textFrames;
+
+      if (this.frames.flat().length === 0) {
         console.warn('Script generated with no visuals.');
-        return;
       }
-
-      let framesGenerated = 0;
-      this.loadingStatus = `Generating ${totalFrames} frames...`;
-
-      const framePromises = allVisuals.map((visual) =>
-        this.generateFrame(visual).then((frameData) => {
-          framesGenerated++;
-          this.loadingStatus = `Generating frame ${framesGenerated} of ${totalFrames}...`;
-          return frameData;
-        }),
-      );
-
-      const allFramesData = await Promise.all(framePromises);
-
-      // Reconstruct the nested frames array
-      const newFrames: string[][] = [];
-      let currentIndex = 0;
-      for (const part of this.story) {
-        const partLength = part.visuals.length;
-        const partFrames = allFramesData.slice(
-          currentIndex,
-          currentIndex + partLength,
-        );
-        newFrames.push(partFrames);
-        currentIndex += partLength;
-      }
-      this.frames = newFrames;
     } catch (e) {
       console.error(e);
       this.error = `Error generating story: ${
@@ -403,26 +395,8 @@ export class GdmLiveAudio extends LitElement {
     return jsonResponse.story;
   }
 
-  private async generateFrame(framePrompt: string): Promise<string> {
-    const fullPrompt = `
-        An animation frame in a ${this.visualStyle} style.
-        Visual description: "${framePrompt}".
-        ${this.positivePrompt ? `MUST INCLUDE: ${this.positivePrompt}` : ''}
-        ${this.negativePrompt ? `MUST NOT INCLUDE: ${this.negativePrompt}` : ''}
-    `;
-    const response = await this.client.models.generateImages({
-      model: 'imagen-3.0-generate-002',
-      prompt: fullPrompt,
-      config: {
-        numberOfImages: 1,
-        outputMimeType: 'image/jpeg',
-      },
-    });
-    return `data:image/jpeg;base64,${response.generatedImages[0].image.imageBytes}`;
-  }
-
   private playStory() {
-    if (this.isPlaying || this.frames.length === 0) return;
+    if (this.isPlaying || this.story.length === 0) return;
     this.isPlaying = true;
     this.currentPart = -1; // Will be incremented to 0 by speakAndAnimate
     this.speakAndAnimate(0);
@@ -442,11 +416,16 @@ export class GdmLiveAudio extends LitElement {
       clearInterval(this.animationIntervalId);
     }
 
-    // Start new animation loop for the current part
-    this.animationIntervalId = window.setInterval(() => {
-      this.currentFrameInPart =
-        (this.currentFrameInPart + 1) % this.frames[this.currentPart].length;
-    }, 200); // 200ms for 5fps
+    // Start new animation loop for the current part, if frames exist
+    if (
+      this.frames[this.currentPart] &&
+      this.frames[this.currentPart].length > 0
+    ) {
+      this.animationIntervalId = window.setInterval(() => {
+        this.currentFrameInPart =
+          (this.currentFrameInPart + 1) % this.frames[this.currentPart].length;
+      }, 200); // 200ms for 5fps
+    }
 
     // Speak narration for the current part
     this.utterance = new SpeechSynthesisUtterance(
@@ -513,17 +492,20 @@ export class GdmLiveAudio extends LitElement {
       if (this.error) {
         return html`<p class="error-message">${this.error}</p>`;
       }
-      if (this.frames.length > 0 && this.frames[this.currentPart]) {
-        return html`<img
-          src=${this.frames[this.currentPart][this.currentFrameInPart]}
-          alt="Generated animation frame"
-        />`;
+      if (
+        this.frames.length > 0 &&
+        this.frames[this.currentPart] &&
+        this.frames[this.currentPart][this.currentFrameInPart]
+      ) {
+        return html`<div class="visual-description">
+          <p>${this.frames[this.currentPart][this.currentFrameInPart]}</p>
+        </div>`;
       }
       return html`<p class="placeholder">Enter a story idea to begin</p>`;
     };
 
     const renderControls = () => {
-      if (this.isLoading || this.frames.length === 0) {
+      if (this.isLoading || this.story.length === 0) {
         return nothing;
       }
       return html`
